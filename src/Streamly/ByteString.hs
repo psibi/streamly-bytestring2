@@ -36,12 +36,7 @@ hGetSome size h = fromStream go
             yld bs (Just go)
 
 fromFile
-  :: (MonadResource m
-     ,MonadIO m
-     ,Streaming t
-     ,MonadTrans t
-     ,Monad (t m)
-     ,MonadIO (t m))
+  :: (MonadResource m, MonadIO m, Streaming t, MonadTrans t, MonadIO (t m))
   => FilePath -> t m ByteString
 fromFile fp =
   bracketBS
@@ -49,61 +44,46 @@ fromFile fp =
     (IO.hClose)
     (\handle -> hGetSome defaultChunkSize handle)
 
--- toFile
--- toFile fp st =
---   bracketBS
---     (IO.openBinaryFile fp IO.WriteMode)
---     IO.hClose
---     (\handle -> toHandle handle st)
+toFile
+  :: (MonadResource m, Streaming t)
+  => FilePath -> t m ByteString -> m ()
+toFile fp stream = do
+  (key, handle) <- allocate (IO.openBinaryFile fp IO.WriteMode) IO.hClose
+  clean key handle stream'
+  where
+    stream' = toStream stream
+    clean key h stream =
+      let stop = return ()
+          yield a Nothing = do
+            liftIO (BS.hPut h a)
+            liftIO $ release key
+          yield a (Just x) = liftIO (BS.hPut h a) >> clean key h x
+      in (runStream stream) Nothing stop yield
+
 bracketBS
   :: (MonadResource m, MonadIO m, Streaming t, MonadTrans t, (Monad (t m)))
-  => IO a -> (a -> IO ()) -> (a -> t m ByteString) -> t m ByteString
+  => IO a -> (a -> IO ()) -> (a -> t m r) -> (t m) r
 bracketBS alloc free inside = do
   (key :: ReleaseKey, seed :: a) <- lift $ allocate alloc free
   clean key (inside seed)
   where
     clean
       :: (MonadIO m, Streaming t)
-      => ReleaseKey -> t m ByteString -> t m ByteString
+      => ReleaseKey -> t m r -> t m r
     clean key sr =
       fromStream $
       Stream $
       \ctx stp yld -> do
-        let yield a Nothing = do
-              liftIO $ print "hi"
+        let yield a Nothing
+             = do
+              -- liftIO $ print "hi" -- This doesn't seem to get called. Ask Harendra.
               liftIO $ release key
               stp
             yield a (Just r) = do
-              liftIO $ print "cont"
+              -- liftIO $ print "cont"
               yld a (Just r)
         (runStream (toStream sr)) ctx stp yield
 
--- clean key sr = do
---   (fr :: ByteString) <- sr
---   if BS.null fr
---     then lift $ release key
---     else undefined
--- Stream $
--- \ctx stp yld -> do
---   let yield a Nothing = do
---         lift $ release key
---         stp
---       yield a (Just r) = undefined -- yld a (Just r)
---   (runStream sr) ctx stp yield
--- fromFile fp =
---   bracket
---     (FR.openFile fp >>= return)
---     (\h -> FR.closeFile h >> return ())
---     (\h -> fromStream (go h))
---   where
---     go h =
---       Stream $
---       \_ stp yld -> do
---         bs <- liftIO (FR.readChunk h)
---         if (BS.null bs)
---           then (liftIO $ FR.closeFile h) >> stp
---           else do
---             yld bs (Just (go h))
 -- | Stream bytes from 'stdin'
 stdin
   :: (MonadIO m, Streaming t)
@@ -127,21 +107,4 @@ toHandle h m = go (toStream m)
           yield a Nothing = liftIO (BS.hPut h a)
           yield a (Just x) = liftIO (BS.hPut h a) >> go x
       in (runStream m1) Nothing stop yield
--- fromFile
---   :: (Streaming t, MonadMask m)
---   => FilePath -> t m a
--- fromFile fp = bracket (FR.openFile fp) FR.closeFile (\h -> fromStream (go h))
---   where
---     go h =
---       Stream $
---       \_ stp yld -> do
---         bs <- liftIO (FR.readChunk h)
---         if (BS.null bs)
---           then (liftIO $ FR.closeFile h) >> stp
---           else do
---             yld bs (Just (go h))
---   :: MonadBaseControl IO m
---   => FilePath -> IO.IOMode -> (IO.Handle -> m a) -> m a
--- withFile fp ioMode action = do
---   let acq = mkAcquire (IO.openFile fp ioMode) (\handle -> IO.hClose handle)
---   with acq action
+
