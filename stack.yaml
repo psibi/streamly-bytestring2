@@ -1,0 +1,9 @@
+resolver: lts-10.4
+
+packages:
+- .
+
+extra-deps:
+- ../streamly
+- resourcet-1.2.0
+
