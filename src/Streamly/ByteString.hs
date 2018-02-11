@@ -61,28 +61,26 @@ toFile fp stream = do
       in (runStream stream) Nothing stop yield
 
 bracketBS
-  :: (MonadResource m, MonadIO m, Streaming t, MonadTrans t, (Monad (t m)))
-  => IO a -> (a -> IO ()) -> (a -> t m r) -> (t m) r
+  :: (Streaming t, MonadResource m, Monad (t m), MonadTrans t)
+  => IO a -> (a -> IO ()) -> (a -> t m b) -> t m b
 bracketBS alloc free inside = do
   (key :: ReleaseKey, seed :: a) <- lift $ allocate alloc free
   clean key (inside seed)
   where
-    clean
-      :: (MonadIO m, Streaming t)
-      => ReleaseKey -> t m r -> t m r
     clean key sr =
       fromStream $
       Stream $
       \ctx stp yld -> do
-        let yield a Nothing
-             = do
-              -- liftIO $ print "hi" -- This doesn't seem to get called. Ask Harendra.
+        let yield a Nothing = do
+              yld a Nothing
               liftIO $ release key
               stp
-            yield a (Just r) = do
-              -- liftIO $ print "cont"
-              yld a (Just r)
-        (runStream (toStream sr)) ctx stp yield
+            yield a (Just (r :: Stream m r)) = do
+              yld a (Just (toStream $ clean key (fromStream r)))
+            stop = do
+              liftIO $ release key
+              stp
+        (runStream (toStream sr)) ctx stop yield
 
 -- | Stream bytes from 'stdin'
 stdin
@@ -107,4 +105,3 @@ toHandle h m = go (toStream m)
           yield a Nothing = liftIO (BS.hPut h a)
           yield a (Just x) = liftIO (BS.hPut h a) >> go x
       in (runStream m1) Nothing stop yield
-
